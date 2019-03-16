@@ -76,7 +76,7 @@ def rebalanceData():
     # Get the list of active dns for each blockid.
     activeDNs = None
     dnsByAvlCap = None
-    failedDN = None
+    degradedBlocks = []
 
     with gLock.gen_rlock():
         activeDNs = getActiveDNs()
@@ -89,7 +89,7 @@ def rebalanceData():
                 print("NODE FAILED: ", dnid)
                 print("=============")
                 print("=============")
-                failedDN = dnid
+                degradedBlocks.extend(dnDetails["BlockList"].keys())
                 continue
             for blockid, _ in dnDetails["BlockList"].items():
                 if blockid in allBlockIDs:
@@ -99,6 +99,11 @@ def rebalanceData():
 
     for blockid, dns in allBlockIDs.items():
         if len(dns) >= constants.REPLICATION_FACTIOR:
+            continue
+        if blockid not in degradedBlocks:
+            # this block is not part of the degraded set, so it is not part of a node which has gone down.
+            # This is possible a first time written degraded block.
+            print("skipping undegraded block; client is possibly still replicating ", blockid)
             continue
         # Find the DNs which do not have a copy yet.
         possibleTargetDNs = list(set(activeDNs).difference(set(dns)))
@@ -110,14 +115,20 @@ def rebalanceData():
             requestDN = random.choice(dns)
             print("requesting DN(" + requestDN + ") to copy block " + blockid + " to DN(" + dnid + ")")
             resp = requests.post("http://" + requestDN + "/SendCopy", json={"block_id": blockid, "target_dn": dnid})
-            #resp = requests.post("http://127.0.0.1:" + requestDN + "/SendCopy", json={"block_id": blockid, "target_dn": dnid})
+            # resp = requests.post("http://127.0.0.1:" + requestDN + "/SendCopy", json={"block_id": blockid, "target_dn": dnid})
 
             if resp.status_code != 200:
                 print("Error code: " + str(resp.status_code))
+                # DO not remove the dnid from, fsdata either.
                 return
             print(blockid + " written to " + dnid)
-    if failedDN:
-        del FSData[failedDN]
+
+    with gLock.gen_wlock():
+        for dnid, dnDetails in list(FSData.items()):
+            if dnid not in activeDNs:
+                del FSData[dnid]
+                print("REMOVED FROM THE FILESYSTEM: ", dnid)
+
 
 def redundancyManager():
     while True:
@@ -178,6 +189,7 @@ class BlockReport(Resource):
                 "TotalCapacity": int(args["TotalCapacity"])
             }
 
+
 def getExistingDNsForBlockID(block_id):
     """
 
@@ -185,7 +197,8 @@ def getExistingDNsForBlockID(block_id):
     """
     for dnid, dn_details in FSData.items():
         if block_id in dn_details["BlockList"].keys():
-            yield  dnid
+            yield dnid
+
 
 class AllocateBlocks(Resource):
     def post(self):
@@ -218,7 +231,8 @@ class AllocateBlocks(Resource):
                 for _ in range(remainingReplication):
                     # print(dns_by_available_capacity)
                     unique_dns = list(
-                        filter(lambda dnid: dnid not in allocation_table[block_id] and dnid not in existing_allocation, dns_by_available_capacity))
+                        filter(lambda dnid: dnid not in allocation_table[block_id] and dnid not in existing_allocation,
+                               dns_by_available_capacity))
                     # print("getting biggest dn from", unique_dns, "excluding", allocation_table[block_id])
                     try:
                         biggest_dn = max(unique_dns, key=dns_by_available_capacity.get)
@@ -314,6 +328,7 @@ class GetFileBlocks(Resource):
 
         return uniformDNs
 
+
 # Get entire block structure with all DNs
 class GetAllBlocksDNs(Resource):
     def get(self, filename):
@@ -350,6 +365,7 @@ class GetAllBlocksDNs(Resource):
             abort(HTTPStatus.NotFound.code)
 
         return blocks
+
 
 # Get entire block structure with all DNs
 class GetAllBlocksDNs(Resource):

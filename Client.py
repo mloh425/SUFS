@@ -1,3 +1,4 @@
+from botocore import exceptions as botoex
 import requests
 import base64
 import boto3
@@ -81,6 +82,9 @@ def getAllBlocksDNs():
 
     # resp = requests.get('http://127.0.0.1:5002/AllBlocksDNs/' + currentFileName)
     if resp.status_code != 200:
+        if resp.status_code == 404:
+            print("file does not exist")
+            sys.exit(1)
         print("Error code: " + str(resp.status_code))
     else:
         readResponse = resp.json()
@@ -194,7 +198,14 @@ def main():
                                   aws_secret_access_key=keysecret
                                   )
         bk = resource.Bucket(constants.BUCKETNAME)
-        bk.download_file(currentFileName, currentFileName)
+        try:
+             bk.download_file(currentFileName, currentFileName)
+        except botoex.ClientError as err:
+             if err.response['Error']['Code'] == '404':
+                 print("file not found on S3")
+                 sys.exit(1)
+             raise
+
         currentFileSize = os.path.getsize(currentFileName)
 
         putToNameNode()
